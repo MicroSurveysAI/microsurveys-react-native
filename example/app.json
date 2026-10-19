@@ -1,0 +1,13 @@
+{
+  "expo": {
+    "name": "MS Demo",
+    "slug": "microsurveys-react-native-demo",
+    "scheme": "msdemo",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "ios": { "bundleIdentifier": "com.microsurveys.rndemo" },
+    "android": { "package": "com.microsurveys.rndemo" },
+    "plugins": ["expo-status-bar"]
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "name": "@microsurveysai/react-native",
+  "version": "0.1.0",
+  "description": "React Native SDK for MicroSurveys — native in-app surveys, triggered on-device by the events you already track.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "react-native": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MicroSurveysAI/microsurveys-react-native.git"
+  },
+  "homepage": "https://github.com/MicroSurveysAI/microsurveys-react-native",
+  "bugs": "https://github.com/MicroSurveysAI/microsurveys-react-native/issues",
+  "keywords": [
+    "microsurveys",
+    "surveys",
+    "react-native",
+    "expo",
+    "in-app",
+    "nps",
+    "csat",
+    "feedback"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@react-native-async-storage/async-storage": ">=1.17.0",
+    "react": ">=18",
+    "react-native": ">=0.72",
+    "react-native-safe-area-context": ">=4.0.0"
+  },
+  "devDependencies": {
+    "@react-native-async-storage/async-storage": "^3.1.1",
+    "@types/react": "^19.1.1",
+    "react": "^19.3.0",
+    "react-native": "^0.88.0",
+    "react-native-safe-area-context": "^5.10.1",
+    "tsup": "^8.3.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
