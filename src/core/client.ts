@@ -15,7 +15,7 @@ import type { AnalyticsIdentity } from "./identity";
 import type { KeyValueStorage } from "./storage";
 import { TriggerEngine } from "./triggerEngine";
 import { endUserIdOf } from "./types";
-import type { Identity, ProjectTheme, Survey, SurveyResult, Trigger } from "./types";
+import type { DeviceContext, Identity, ProjectTheme, Survey, SurveyResult, Trigger } from "./types";
 
 /** Default API base. Override via `apiBaseURL` for self-hosted deployments. */
 const DEFAULT_BASE_URL = "https://console.microsurveys.ai";
@@ -32,6 +32,11 @@ export interface CreateClientOptions {
   refreshOnForeground?: boolean;
   /** This device's platform for survey targeting ("ios" | "android"). */
   platform: string;
+  /** The OS version, sent with responses. */
+  osVersion?: string;
+  /** The host app's version, sent with responses so results can be compared
+   *  across releases. */
+  appVersion?: string;
   /** Where config, identity, trigger state and the outbox persist. Must already
    *  hold its data when the client is created. */
   storage: KeyValueStorage;
@@ -66,6 +71,9 @@ export class MicroSurveysClient {
   private readonly engine: TriggerEngine;
   private readonly configTTLms: number;
   private readonly refreshOnForeground: boolean;
+  private readonly platform: string;
+  private readonly osVersion: string | undefined;
+  private readonly appVersion: string | undefined;
   private readonly subscribeForeground: (onForeground: () => void) => () => void;
 
   private readonly presentListeners = new Set<PresentListener>();
@@ -82,6 +90,9 @@ export class MicroSurveysClient {
     this.api = new ApiClient(opts.apiKey, opts.apiBaseURL ?? DEFAULT_BASE_URL, kv);
     this.configTTLms = opts.configTTLms ?? DEFAULT_CONFIG_TTL_MS;
     this.refreshOnForeground = opts.refreshOnForeground ?? true;
+    this.platform = opts.platform;
+    this.osVersion = opts.osVersion;
+    this.appVersion = opts.appVersion;
     this.subscribeForeground = opts.subscribeForeground;
     this.engine = new TriggerEngine({
       store: this.triggerStateStore,
@@ -217,8 +228,16 @@ export class MicroSurveysClient {
     result: SurveyResult,
   ): void {
     const endUserId = endUserIdOf(identity);
+    const context = this.deviceContext();
     // Impression is finalized at close, so `dismissed` is authoritative.
-    this.api.recordImpression({ surveyId, triggerId, endUserId, shownAt, dismissed: result.dismissed });
+    const impressionId = this.api.recordImpression({
+      surveyId,
+      triggerId,
+      endUserId,
+      shownAt,
+      dismissed: result.dismissed,
+      context,
+    });
     // A pure dismissal (no answers) is an impression, NOT a response — don't
     // inflate the response count. Partial multi-step answers still count.
     if (result.completed || result.answers.length > 0) {
@@ -228,9 +247,24 @@ export class MicroSurveysClient {
         completed: result.completed,
         submittedAt: new Date(),
         userProps: identity.userProperties,
+        impressionId,
+        triggerId,
+        context,
         answers: result.answers,
       });
     }
+  }
+
+  /** Where this showing happened. The language is read at record time: the user
+   *  can change it while the app runs. */
+  private deviceContext(): DeviceContext {
+    let locale: string | undefined;
+    try {
+      locale = Intl.DateTimeFormat().resolvedOptions().locale || undefined;
+    } catch {
+      // Runtimes built without Intl: leave the language out.
+    }
+    return { platform: this.platform, appVersion: this.appVersion, osVersion: this.osVersion, locale };
   }
 }
 

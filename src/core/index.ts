@@ -27,6 +27,7 @@ export type {
   Survey,
   SDKConfig,
   ProjectTheme,
+  DeviceContext,
   Identity,
   AnswerValue,
   SurveyAnswer,

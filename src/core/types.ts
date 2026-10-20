@@ -127,6 +127,18 @@ export interface ProjectTheme {
   titleLetterSpacing?: number;
 }
 
+// ── Device context ───────────────────────────────────────────────────────────
+
+/** Where a survey was shown, sent with impressions and responses so results can
+ *  be broken down by platform, release and language (API-CONTRACT "Device
+ *  context"). Every field is optional; unknown ones are left out. */
+export interface DeviceContext {
+  platform?: string;
+  appVersion?: string;
+  osVersion?: string;
+  locale?: string;
+}
+
 // ── Identity ─────────────────────────────────────────────────────────────────
 
 export interface Identity {

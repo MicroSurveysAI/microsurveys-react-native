@@ -62,6 +62,7 @@ import { MicroSurvey } from "@microsurveysai/react-native";
 | `refreshOnForeground` | `true` | On app foreground, retry queued ingest and refresh a stale config. |
 | `configTTLms` | 12h | How long the cached config counts as fresh. |
 | `storage` | AsyncStorage | A synchronous store (e.g. MMKV) to persist into instead. |
+| `appVersion` | — | Your app's version (e.g. `"3.2.0"`), sent with responses so results can be compared across releases. With Expo, pass `Application.nativeApplicationVersion` from `expo-application`. |
 
 `<MicroSurveysProvider>` also takes `autoStart` (default `true`) and `fontFamily` (a font your app
 registered, e.g. with `expo-font`; surveys use the system font otherwise).

@@ -51,6 +51,9 @@ export interface MicroSurveysOptions {
   storage?: KeyValueStorage;
   /** An async store to persist into. Defaults to `@react-native-async-storage/async-storage`. */
   asyncStorage?: AsyncKeyValueStorage;
+  /** Your app's version (e.g. "3.2.0"), sent with responses so results can be
+   *  compared across releases. With Expo: `Application.nativeApplicationVersion`. */
+  appVersion?: string;
 }
 
 function appStateForeground(onForeground: () => void): () => void {
@@ -82,6 +85,8 @@ export class MicroSurveys {
         refreshOnForeground: opts.refreshOnForeground ?? true,
         // Survey platform targeting: "ios" | "android".
         platform: Platform.OS,
+        osVersion: String(Platform.Version),
+        appVersion: opts.appVersion,
         storage: kv,
         subscribeForeground: appStateForeground,
       });

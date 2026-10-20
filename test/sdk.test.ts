@@ -5,7 +5,7 @@ import type { AsyncKeyValueStorage } from "../src/asyncStorage";
 // Platform.OS and AppState from them.
 const appStateListeners: ((state: string) => void)[] = [];
 vi.mock("react-native", () => ({
-  Platform: { OS: "ios" },
+  Platform: { OS: "ios", Version: "26.1" },
   AppState: {
     addEventListener: (_: string, cb: (state: string) => void) => {
       appStateListeners.push(cb);
@@ -215,5 +215,44 @@ describe("MicroSurveys", () => {
     await ms.ready;
     await new Promise((r) => setTimeout(r, 5));
     expect(presented).toEqual(["s1"]);
+  });
+
+  it("sends the trigger, impression link and device context with a response", async () => {
+    const sent: { path: string; body: Record<string, Record<string, unknown>[]> }[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init: { body: string }) => {
+        sent.push({ path: new URL(url).pathname, body: JSON.parse(init.body) });
+        return { ok: true, status: 200, headers: { get: () => null }, text: async () => "" };
+      }),
+    );
+    const config = {
+      projectId: "p",
+      surveys: [
+        {
+          id: "s1",
+          name: "Thumbs",
+          questions: [{ id: "q", type: "THUMBS", prompt: "?", config: {} }],
+          triggers: [{ id: "t", type: "SINGLE", steps: [{ order: 0, event: "done", match: {} }] }],
+        },
+      ],
+    };
+    const asyncStorage = fakeAsyncStorage({
+      "com.microsurveys.config.cache": JSON.stringify({ rawConfig: JSON.stringify(config), etag: null, storedAt: Date.now() }),
+    });
+    const ms = new MicroSurveys({ apiKey: "ms_test_x", asyncStorage, appVersion: "3.2.0" });
+    ms.onPresent((a) => a.close({ completed: true, dismissed: false, answers: [{ questionId: "q", value: { value: "up" } }] }));
+    ms.track("done");
+    const client = await ms.ready;
+    await new Promise((r) => setTimeout(r, 5));
+    await (client as unknown as { api: { flush(): Promise<void> } }).api.flush();
+
+    const impression = sent.find((s) => s.path === "/api/sdk/impressions")?.body.impressions?.[0] ?? {};
+    const response = sent.find((s) => s.path === "/api/sdk/responses")?.body.responses?.[0] ?? {};
+    expect(response.impressionId).toBe(impression.clientId);
+    expect(response.triggerId).toBe("t");
+    expect(impression.triggerId).toBe("t");
+    expect(response.context).toMatchObject({ platform: "ios", osVersion: "26.1", appVersion: "3.2.0" });
+    expect(impression.context).toEqual(response.context);
   });
 });

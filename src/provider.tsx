@@ -25,6 +25,8 @@ export interface MicroSurveysProviderProps {
   apiKey?: string;
   /** Override the API base for self-hosted deployments. Ignored when `instance` is passed. */
   apiBaseURL?: string;
+  /** Your app's version (e.g. "3.2.0"), sent with responses. Ignored when `instance` is passed. */
+  appVersion?: string;
   /** A `MicroSurveys` you created yourself, e.g. to register its Amplitude plugin. */
   instance?: MicroSurveys;
   /** Start automatically on mount (load config, flush queued ingest). Default true. */
@@ -35,9 +37,9 @@ export interface MicroSurveysProviderProps {
   children?: ReactNode;
 }
 
-export function MicroSurveysProvider({ apiKey, apiBaseURL, instance, autoStart = true, fontFamily, children }: MicroSurveysProviderProps) {
+export function MicroSurveysProvider({ apiKey, apiBaseURL, appVersion, instance, autoStart = true, fontFamily, children }: MicroSurveysProviderProps) {
   // Created once; later prop changes are ignored (remount the provider to switch keys).
-  const [owned] = useState<MicroSurveys | null>(() => (!instance && apiKey ? new MicroSurveys({ apiKey, apiBaseURL }) : null));
+  const [owned] = useState<MicroSurveys | null>(() => (!instance && apiKey ? new MicroSurveys({ apiKey, apiBaseURL, appVersion }) : null));
   const ms = instance ?? owned;
 
   useEffect(() => {
