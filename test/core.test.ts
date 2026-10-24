@@ -255,3 +255,31 @@ describe("engine platform targeting", () => {
     expect(runOn("android", ["ios"])).toBe(false);
   });
 });
+
+describe("config bounds", () => {
+  const parseQuestions = (questions: unknown[]) =>
+    parseConfig(JSON.stringify({ projectId: "prj_1", surveys: [{ id: "svy_1", name: "S", questions }] }))!.surveys[0]!.questions;
+
+  it("leaves real configs as authored", () => {
+    const [nps, stars, choice] = parseQuestions([
+      { id: "q1", order: 0, type: "NPS", prompt: "?", config: { min: 0, max: 10 } },
+      { id: "q2", order: 1, type: "CSAT_STAR", prompt: "?", config: { count: 5 } },
+      { id: "q3", order: 2, type: "SINGLE_CHOICE", prompt: "?", config: { options: [{ value: "Yes", label: "Yes" }] } },
+    ]);
+    expect(nps!.config).toMatchObject({ kind: "scale", min: 0, max: 10 });
+    expect(stars!.config).toEqual({ kind: "stars", count: 5 });
+    expect(choice!.config).toEqual({ kind: "singleChoice", options: [{ value: "Yes", label: "Yes" }] });
+  });
+
+  it("bounds absurd values so the survey can't freeze the app", () => {
+    const options = Array.from({ length: 5000 }, (_, i) => ({ value: `${i}`, label: `${i}` }));
+    const [scale, stars, choice] = parseQuestions([
+      { id: "q1", order: 0, type: "NPS", prompt: "?", config: { min: 0, max: 1e9 } },
+      { id: "q2", order: 1, type: "CSAT_STAR", prompt: "?", config: { count: 1e9 } },
+      { id: "q3", order: 2, type: "SINGLE_CHOICE", prompt: "?", config: { options } },
+    ]);
+    expect(scale!.config).toMatchObject({ min: 0, max: 100 });
+    expect(stars!.config).toEqual({ kind: "stars", count: 100 });
+    expect((choice!.config as { options: unknown[] }).options).toHaveLength(100);
+  });
+});

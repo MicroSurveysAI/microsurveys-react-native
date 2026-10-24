@@ -230,16 +230,35 @@ function strOrUndef(v: unknown): string | undefined {
   return typeof v === "string" ? v : undefined;
 }
 
+// Upper bounds on what a config can make the SDK draw. A scale, star row or option list is drawn
+// one control per item, so an absurd value (count: 1000000000) would freeze the app. Real surveys
+// sit far below these; the server applies the same bounds before sending the config.
+const MAX_SCALE_POINTS = 101;
+const MAX_SCALE_ABS = 1000;
+const MAX_STARS = 100;
+const MAX_OPTIONS = 100;
+
+function boundedScale(min: number, max: number): { min: number; max: number } {
+  const lo = Math.min(Math.max(min, -MAX_SCALE_ABS), MAX_SCALE_ABS);
+  let hi = Math.min(Math.max(max, -MAX_SCALE_ABS), MAX_SCALE_ABS);
+  if (hi - lo > MAX_SCALE_POINTS - 1) hi = lo + MAX_SCALE_POINTS - 1;
+  return { min: lo, max: hi };
+}
+
+function boundedOptions(raw: unknown): unknown[] {
+  return Array.isArray(raw) ? raw.slice(0, MAX_OPTIONS) : [];
+}
+
 function normalizeConfig(type: QuestionType, raw: Record<string, unknown>): QuestionConfig {
   switch (type) {
     case "NPS":
-      return { kind: "scale", min: numOr(raw.min, 0), max: numOr(raw.max, 10), minLabel: strOrUndef(raw.minLabel), maxLabel: strOrUndef(raw.maxLabel) };
+      return { kind: "scale", ...boundedScale(numOr(raw.min, 0), numOr(raw.max, 10)), minLabel: strOrUndef(raw.minLabel), maxLabel: strOrUndef(raw.maxLabel) };
     case "CES":
-      return { kind: "scale", min: numOr(raw.min, 1), max: numOr(raw.max, 7), minLabel: strOrUndef(raw.minLabel), maxLabel: strOrUndef(raw.maxLabel) };
+      return { kind: "scale", ...boundedScale(numOr(raw.min, 1), numOr(raw.max, 7)), minLabel: strOrUndef(raw.minLabel), maxLabel: strOrUndef(raw.maxLabel) };
     case "CSAT_STAR":
-      return { kind: "stars", count: numOr(raw.count, 5) };
+      return { kind: "stars", count: Math.min(numOr(raw.count, 5), MAX_STARS) };
     case "CSAT_EMOJI": {
-      const opts = Array.isArray(raw.options) ? raw.options : [];
+      const opts = boundedOptions(raw.options);
       const options: EmojiOption[] = opts.map((o) => {
         const oo = asObject(o);
         return { value: String(oo.value ?? ""), emoji: typeof oo.emoji === "string" ? oo.emoji : "", label: strOrUndef(oo.label) };
@@ -249,7 +268,7 @@ function normalizeConfig(type: QuestionType, raw: Record<string, unknown>): Ques
     case "THUMBS":
       return { kind: "thumbs" };
     case "SINGLE_CHOICE": {
-      const opts = Array.isArray(raw.options) ? raw.options : [];
+      const opts = boundedOptions(raw.options);
       const options: ChoiceOption[] = opts.map((o) => {
         const oo = asObject(o);
         const value = String(oo.value ?? "");
