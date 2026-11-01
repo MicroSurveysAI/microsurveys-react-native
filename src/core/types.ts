@@ -101,6 +101,12 @@ export interface SDKConfig {
   fetchedAt?: string | null;
   theme: ProjectTheme | null;
   surveys: Survey[];
+  /** The project turned event signals on: count tracked events and upload the
+   *  counts (see eventCounter.ts). Absent on older servers, which means off. */
+  eventSignals: boolean;
+  /** Hashes of the project's test devices for the live debugger (see debug.ts).
+   *  Empty when none are set, or on older servers. */
+  debugUsers: string[];
 }
 
 /** Brand-level survey appearance (API-CONTRACT §Theme). All keys optional. */
@@ -362,5 +368,9 @@ export function parseConfig(rawText: string): SDKConfig | null {
     .map((s) => normalizeSurvey(asObject(s)))
     .filter((s): s is Survey => s !== null);
   const theme = root.theme && typeof root.theme === "object" && !Array.isArray(root.theme) ? (root.theme as ProjectTheme) : null;
-  return { projectId, fetchedAt: strOrUndef(root.fetchedAt) ?? null, theme, surveys };
+  return { projectId, fetchedAt: strOrUndef(root.fetchedAt) ?? null, theme,
+    surveys,
+    eventSignals: root.eventSignals === true,
+    debugUsers: Array.isArray(root.debugUsers) ? root.debugUsers.filter((h): h is string => typeof h === "string") : [],
+  };
 }

@@ -9,6 +9,8 @@
 import { Outbox } from "./outbox";
 import { uuid } from "./storage";
 import type { KeyValueStorage } from "./storage";
+import type { EventCount } from "./eventCounter";
+import type { DebugEntry } from "./debug";
 import { parseConfig } from "./types";
 import type { SDKConfig, SurveyAnswer, JsonObject, DeviceContext } from "./types";
 
@@ -102,6 +104,22 @@ export class ApiClient {
     this.enqueue("/api/sdk/responses", { responses: [payload] });
   }
 
+  // ── Event signals ─────────────────────────────────────────────────────────
+
+  /** Queues one upload window of event counts. No clientId: a re-sent batch
+   *  can count twice, which is fine for "last seen" and trend lines. */
+  recordEventCounts(events: EventCount[], context: DeviceContext & { sdkVersion: string }): void {
+    if (events.length === 0) return;
+    this.enqueue("/api/sdk/events", { events, context });
+  }
+
+  // ── Live debugger ─────────────────────────────────────────────────────────
+
+  /** Sends one debugger entry from a test device. */
+  recordDebug(entry: DebugEntry, endUserId: string, context: DeviceContext & { sdkVersion: string }): void {
+    this.enqueue("/api/sdk/debug", { entries: [entry], endUserId, context });
+  }
+
   private enqueue(path: string, value: unknown): void {
     this.outbox.enqueue(path, JSON.stringify(value));
     void this.flush();
@@ -110,19 +128,30 @@ export class ApiClient {
   // ── Flush ────────────────────────────────────────────────────────────────────
 
   /** POSTs queued entries in order. Stops at the first retryable failure (likely
-   *  offline) and leaves the rest for next time. Idempotency keys make re-sends
-   *  safe. Never throws. */
+   *  offline) and leaves the rest for next time. Entries queued while a flush is
+   *  running are sent by the same flush, so nothing waits for the next event.
+   *  Idempotency keys make re-sends safe. Never throws. */
   async flush(): Promise<void> {
     if (this.isFlushing) return;
     this.isFlushing = true;
     try {
-      for (const entry of this.outbox.snapshot()) {
-        try {
-          await this.post(entry.path, entry.body);
-          this.outbox.remove(entry.id);
-        } catch {
-          break; // network/server problem — retry on the next flush
+      // Guards against re-sending an entry whose removal didn't persist (storage full).
+      const sent = new Set<string>();
+      for (;;) {
+        const pending = this.outbox.snapshot().filter((e) => !sent.has(e.id));
+        if (pending.length === 0) break;
+        let failed = false;
+        for (const entry of pending) {
+          try {
+            await this.post(entry.path, entry.body);
+            this.outbox.remove(entry.id);
+            sent.add(entry.id);
+          } catch {
+            failed = true; // network/server problem — retry on the next flush
+            break;
+          }
         }
+        if (failed) break;
       }
     } finally {
       this.isFlushing = false;

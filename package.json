@@ -1,6 +1,6 @@
 {
   "name": "@microsurveysai/react-native",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "React Native SDK for MicroSurveys — native in-app surveys, triggered on-device by the events you already track.",
   "license": "MIT",
   "type": "module",

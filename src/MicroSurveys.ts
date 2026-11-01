@@ -63,6 +63,13 @@ function appStateForeground(onForeground: () => void): () => void {
   return () => sub.remove();
 }
 
+function appStateBackground(onBackground: () => void): () => void {
+  const sub = AppState.addEventListener("change", (state) => {
+    if (state === "background") onBackground();
+  });
+  return () => sub.remove();
+}
+
 export class MicroSurveys {
   readonly apiKey: string;
   /** Resolves with the underlying runtime once storage has loaded. */
@@ -89,6 +96,7 @@ export class MicroSurveys {
         appVersion: opts.appVersion,
         storage: kv,
         subscribeForeground: appStateForeground,
+        subscribeBackground: appStateBackground,
       });
       this.client = client;
       const queued = this.pending;

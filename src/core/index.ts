@@ -11,6 +11,12 @@
 export { createClient, MicroSurveysClient } from "./client";
 export type { CreateClientOptions, ActiveSurvey } from "./client";
 export { IdentityStore } from "./identity";
+export { EventCounter } from "./eventCounter";
+export type { EventCount } from "./eventCounter";
+export { SDK_VERSION } from "./version";
+export { debugKey } from "./debug";
+export type { DebugEntry } from "./debug";
+export type { Decision, DecisionReason } from "./triggerEngine";
 export type { AnalyticsIdentity } from "./identity";
 export { memoryStorage, STORAGE_KEY_PREFIX } from "./storage";
 export type { KeyValueStorage } from "./storage";

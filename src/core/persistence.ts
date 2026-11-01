@@ -58,6 +58,18 @@ export class ConfigStore {
     return this.parsed?.theme ?? null;
   }
 
+  get eventSignals(): boolean {
+    return this.parsed?.eventSignals ?? false;
+  }
+
+  get projectId(): string | null {
+    return this.parsed?.projectId ?? null;
+  }
+
+  get debugUsers(): string[] {
+    return this.parsed?.debugUsers ?? [];
+  }
+
   get etag(): string | null {
     return this.persisted?.etag ?? null;
   }

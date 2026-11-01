@@ -16,10 +16,34 @@
 //
 
 import { advance } from "./triggerSequencer";
-import { inSample, audienceMatches } from "./sampling";
+import { inSample, audienceMatches, eventMatchesStep } from "./sampling";
 import { newTriggerRecord, endUserIdOf } from "./types";
 import type { TriggerStateStore } from "./persistence";
 import type { Identity, Survey, Trigger, UserTriggerState } from "./types";
+
+/** Why the engine did or didn't schedule a survey for an event. Reported to the
+ *  live debugger for test devices (see `debug.ts`); `eligible` means scheduled. */
+export type DecisionReason =
+  | "platform"
+  | "property_mismatch"
+  | "sequence_in_progress"
+  | "not_started"
+  | "ended"
+  | "frequency"
+  | "audience"
+  | "sampled_out"
+  | "cap"
+  | "eligible"
+  | "shown"
+  | "another_survey_showing";
+
+export interface Decision {
+  surveyId: string;
+  triggerId: string | null;
+  reason: DecisionReason;
+  /** For `eligible`: seconds until the survey shows. */
+  delaySeconds?: number;
+}
 
 export interface TriggerEngineOptions {
   store: TriggerStateStore;
@@ -31,6 +55,9 @@ export interface TriggerEngineOptions {
   platform: string;
   /** Injectable clock in **seconds** (tests). Defaults to `Date.now()/1000`. */
   now?: () => number;
+  /** Called with each decision about a survey whose trigger names the event.
+   *  Used by the live debugger; never affects what the engine does. */
+  onDecision?: (decision: Decision) => void;
 }
 
 export class TriggerEngine {
@@ -40,6 +67,7 @@ export class TriggerEngine {
   private readonly onPresent: (survey: Survey, trigger: Trigger, identity: Identity) => void;
   private readonly platform: string;
   private readonly now: () => number;
+  private readonly onDecision: (decision: Decision) => void;
   private readonly timers = new Set<ReturnType<typeof setTimeout>>();
 
   constructor(opts: TriggerEngineOptions) {
@@ -49,6 +77,7 @@ export class TriggerEngine {
     this.onPresent = opts.onPresent;
     this.platform = opts.platform;
     this.now = opts.now ?? (() => Date.now() / 1000);
+    this.onDecision = opts.onDecision ?? (() => {});
   }
 
   /** Feed an event into the engine. */
@@ -61,26 +90,64 @@ export class TriggerEngine {
     for (const survey of this.surveysProvider()) {
       const triggers = survey.triggers;
       if (!triggers || triggers.length === 0) continue;
+      // Only surveys whose trigger names this event are reported to the debugger;
+      // the rest have nothing to say about it.
+      const names = (t: Trigger) => t.steps.some((st) => st.event === name);
       // Platform targeting: skip when the list is non-empty and excludes us.
-      if (survey.platforms && survey.platforms.length > 0 && !survey.platforms.includes(this.platform)) continue;
+      if (survey.platforms && survey.platforms.length > 0 && !survey.platforms.includes(this.platform)) {
+        const t = triggers.find(names);
+        if (t) this.onDecision({ surveyId: survey.id, triggerId: t.id, reason: "platform" });
+        continue;
+      }
 
       for (const trigger of triggers) {
         const satisfied = this.advanceTrigger(trigger, state, name, properties, nowT);
-        if (!satisfied) continue;
+        const skip = (reason: DecisionReason) => this.onDecision({ surveyId: survey.id, triggerId: trigger.id, reason });
+        if (!satisfied) {
+          if (names(trigger)) {
+            // The event matched a step but the trigger isn't complete (a sequence), or it
+            // had the right name with the wrong properties.
+            const matchedStep = trigger.steps.some((st) => eventMatchesStep(name, properties, st));
+            skip(matchedStep ? "sequence_in_progress" : "property_mismatch");
+          }
+          continue;
+        }
 
         const occurrence = state.triggers[trigger.id]?.satisfiedCount ?? 0;
 
         // (1) window
-        if (!this.isWithinWindow(survey, nowT)) continue;
+        const window = this.windowState(survey, nowT);
+        if (window !== "open") {
+          skip(window);
+          continue;
+        }
         // (3) frequency
-        if (!passesFrequency(trigger, occurrence)) continue;
+        if (!passesFrequency(trigger, occurrence)) {
+          skip("frequency");
+          continue;
+        }
         // (4) audience
-        if (survey.audienceMatch && !audienceMatches(survey.audienceMatch, identity.userProperties)) continue;
+        if (survey.audienceMatch && !audienceMatches(survey.audienceMatch, identity.userProperties)) {
+          skip("audience");
+          continue;
+        }
         // (5) sampling (sticky)
-        if (!this.passesSampling(survey, endUserId, state)) continue;
+        if (!this.passesSampling(survey, endUserId, state)) {
+          skip("sampled_out");
+          continue;
+        }
         // (6) cap
-        if (!passesCap(survey, state, nowT)) continue;
+        if (!passesCap(survey, state, nowT)) {
+          skip("cap");
+          continue;
+        }
 
+        this.onDecision({
+          surveyId: survey.id,
+          triggerId: trigger.id,
+          reason: "eligible",
+          delaySeconds: Math.max(0, trigger.delaySeconds),
+        });
         this.scheduleShow(survey, trigger, identity);
       }
     }
@@ -111,16 +178,16 @@ export class TriggerEngine {
 
   // ── Eligibility checks ─────────────────────────────────────────────────────
 
-  private isWithinWindow(survey: Survey, nowT: number): boolean {
+  private windowState(survey: Survey, nowT: number): "open" | "not_started" | "ended" {
     if (survey.startsAt) {
       const start = Date.parse(survey.startsAt);
-      if (!Number.isNaN(start) && nowT < start / 1000) return false;
+      if (!Number.isNaN(start) && nowT < start / 1000) return "not_started";
     }
     if (survey.endsAt) {
       const end = Date.parse(survey.endsAt);
-      if (!Number.isNaN(end) && nowT > end / 1000) return false;
+      if (!Number.isNaN(end) && nowT > end / 1000) return "ended";
     }
-    return true;
+    return "open";
   }
 
   private passesSampling(survey: Survey, endUserId: string, state: UserTriggerState): boolean {
@@ -144,7 +211,10 @@ export class TriggerEngine {
       const nowT = this.now();
 
       // Re-check the cap at fire time (another survey may have shown during the delay).
-      if (!passesCap(survey, state, nowT)) return;
+      if (!passesCap(survey, state, nowT)) {
+        this.onDecision({ surveyId: survey.id, triggerId: trigger.id, reason: "cap" });
+        return;
+      }
 
       // Record the show now so the cap holds even before the impression round-trips.
       const record = state.surveys[survey.id] ?? {};

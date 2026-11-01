@@ -183,11 +183,12 @@ describe("MicroSurveys", () => {
     ms.stop();
   });
 
-  it("refreshes on AppState foreground once started", async () => {
+  it("listens to AppState once started and stops listening on stop", async () => {
     const ms = new MicroSurveys({ apiKey: "ms_test_x", asyncStorage: fakeAsyncStorage() });
     ms.start();
     await ms.ready;
-    expect(appStateListeners).toHaveLength(1);
+    // One for foreground (config refresh, ingest retry), one for background (event counts upload).
+    expect(appStateListeners).toHaveLength(2);
     ms.stop();
     expect(appStateListeners).toHaveLength(0);
   });
