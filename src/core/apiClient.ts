@@ -1,7 +1,7 @@
 //
 // apiClient.ts
 //
-// `fetch`-based client for the three SDK endpoints plus outbox flush. Every
+// `fetch`-based client for the SDK endpoints plus outbox flush. Every
 // impression/response carries a UUID `clientId` so the server upserts and
 // retries never duplicate (API-CONTRACT §Idempotency). Port of iOS `APIClient`.
 //
@@ -19,6 +19,18 @@ const API_VERSION = "2026-06-30";
 export type ConfigFetchResult =
   | { kind: "notModified" }
   | { kind: "config"; rawText: string; config: SDKConfig | null; etag: string | null };
+
+/** One server event waiting in the mailbox (API-CONTRACT §6). */
+export interface PendingEvent {
+  id: string;
+  name: string;
+  properties: Record<string, unknown>;
+  /** ISO 8601: when it happened, not when it arrived. */
+  occurredAt: string;
+}
+
+/** The most events `/api/sdk/pending` returns per call. */
+export const PENDING_PAGE_SIZE = 50;
 
 export class ApiClient {
   private readonly apiKey: string;
@@ -50,6 +62,43 @@ export class ApiClient {
 
     const rawText = await res.text();
     return { kind: "config", rawText, config: parseConfig(rawText), etag: res.headers.get("ETag") };
+  }
+
+  // ── Server events mailbox ───────────────────────────────────────────────────
+
+  /** `POST /api/sdk/pending`: the server events waiting for this user, oldest
+   *  first. Each is handed out once, so this is not queued in the outbox. Resolves
+   *  `[]` without a request when there's no id to ask for. Throws on network/HTTP
+   *  errors; malformed entries are dropped. */
+  async fetchPending(ids: { userId: string | null; deviceId: string | null }): Promise<PendingEvent[]> {
+    const body: Record<string, string> = {};
+    if (ids.userId) body.userId = ids.userId;
+    if (ids.deviceId) body.deviceId = ids.deviceId;
+    if (Object.keys(body).length === 0) return [];
+
+    const res = await fetch(this.endpoint("/api/sdk/pending"), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        "MS-Api-Version": API_VERSION,
+        "Content-Type": "application/json; charset=utf-8",
+      },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(`pending fetch failed: ${res.status}`);
+
+    const root = (await res.json()) as { events?: unknown };
+    const events = Array.isArray(root?.events) ? root.events : [];
+    return events.flatMap((raw): PendingEvent[] => {
+      const e = raw as Record<string, unknown> | null;
+      if (!e || typeof e.id !== "string" || typeof e.name !== "string" || typeof e.occurredAt !== "string") return [];
+      if (Number.isNaN(Date.parse(e.occurredAt))) return [];
+      const properties =
+        e.properties && typeof e.properties === "object" && !Array.isArray(e.properties)
+          ? (e.properties as Record<string, unknown>)
+          : {};
+      return [{ id: e.id, name: e.name, properties, occurredAt: e.occurredAt }];
+    });
   }
 
   // ── Impressions / responses ─────────────────────────────────────────────────

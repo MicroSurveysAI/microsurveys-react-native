@@ -8,7 +8,8 @@
 // the foreground signal are passed in by `MicroSurveys`.
 //
 
-import { ApiClient } from "./apiClient";
+import { ApiClient, PENDING_PAGE_SIZE } from "./apiClient";
+import type { PendingEvent } from "./apiClient";
 import { ConfigStore, TriggerStateStore } from "./persistence";
 import { IdentityStore } from "./identity";
 import type { AnalyticsIdentity } from "./identity";
@@ -27,6 +28,16 @@ const DEFAULT_BASE_URL = "https://console.microsurveys.ai";
 const DEFAULT_CONFIG_TTL_MS = 30 * 60 * 1000;
 /** How often counted events are uploaded while event signals are on. */
 const EVENT_COUNTS_INTERVAL_MS = 60 * 1000;
+/** Server events mailbox (API-CONTRACT §6). Follow-up checks after each start or
+ *  foreground: Amplitude streams within about 60 s, so these catch an event that
+ *  happened just before the app opened. */
+const PENDING_FOLLOW_UPS_MS = [30 * 1000, 90 * 1000];
+/** Regular check while the app stays in the foreground. */
+const PENDING_INTERVAL_MS = 5 * 60 * 1000;
+/** Faster check while a sequence waits on a server event as its next step. */
+const PENDING_WAITING_INTERVAL_MS = 60 * 1000;
+/** Stop the faster check this long after the waiting sequence started. */
+const PENDING_WAITING_MAX_SECONDS = 3 * 60 * 60;
 
 export interface CreateClientOptions {
   apiKey: string;
@@ -49,7 +60,8 @@ export interface CreateClientOptions {
   /** Subscribes to "app came to the foreground"; returns an unsubscribe. */
   subscribeForeground: (onForeground: () => void) => () => void;
   /** Subscribes to "app went to the background"; returns an unsubscribe. Used
-   *  to upload event counts before the app may be suspended. */
+   *  to upload event counts before the app may be suspended, and to stop the
+   *  server events mailbox timers. */
   subscribeBackground?: (onBackground: () => void) => () => void;
 }
 
@@ -90,6 +102,10 @@ export class MicroSurveysClient {
   /** Decisions collected while one event is processed, for the live debugger. */
   private collecting: Decision[] | null = null;
   private unsubscribeBackground: (() => void) | null = null;
+  /** Mailbox timers, cleared on background and stop. */
+  private pendingTimers: ReturnType<typeof setTimeout>[] = [];
+  private pendingIntervals: ReturnType<typeof setInterval>[] = [];
+  private pendingInFlight = false;
 
   private readonly presentListeners = new Set<PresentListener>();
   private readonly configListeners = new Set<ConfigListener>();
@@ -122,22 +138,32 @@ export class MicroSurveysClient {
 
   // ── Lifecycle ────────────────────────────────────────────────────────────────
 
-  /** Flush any queued ingest, refresh config, and (optionally) wire the
-   *  foreground refresh. Safe to call once early. */
+  /** Flush any queued ingest, refresh config, wire the foreground refresh
+   *  (optional) and the server events mailbox checks. Safe to call once early. */
   start(): void {
     if (this.started) return;
     this.started = true;
     void this.api.flush();
-    void this.refreshConfig();
-    if (this.refreshOnForeground) {
-      this.unsubscribeForeground = this.subscribeForeground(() => {
+    // Check the server events mailbox once the config says whether there is one.
+    void this.refreshConfig().then(() => {
+      if (this.started) this.startPendingChecks();
+    });
+    // Always subscribed: the mailbox is checked on every foreground, whatever the
+    // config TTL, and even when `refreshOnForeground` is off.
+    this.unsubscribeForeground = this.subscribeForeground(() => {
+      if (this.refreshOnForeground) {
         // Retry ingest queued while offline/backgrounded, then refresh if stale.
         void this.api.flush();
         this.refreshConfigIfStale();
-      });
-    }
+      }
+      this.startPendingChecks();
+    });
     // The app may be suspended or killed in the background: send what was counted first.
-    this.unsubscribeBackground = this.subscribeBackground?.(() => this.flushEventCounts()) ?? null;
+    this.unsubscribeBackground =
+      this.subscribeBackground?.(() => {
+        this.flushEventCounts();
+        this.stopPendingChecks();
+      }) ?? null;
     this.eventCountsTimer = setInterval(() => this.flushEventCounts(), EVENT_COUNTS_INTERVAL_MS);
   }
 
@@ -147,6 +173,7 @@ export class MicroSurveysClient {
     this.flushEventCounts();
     if (this.eventCountsTimer) clearInterval(this.eventCountsTimer);
     this.eventCountsTimer = null;
+    this.stopPendingChecks();
     this.unsubscribeBackground?.();
     this.unsubscribeBackground = null;
     this.unsubscribeForeground?.();
@@ -185,18 +212,104 @@ export class MicroSurveysClient {
       this.eventCounter.record(name, properties);
       if (this.eventCounter.size >= MAX_NAMES) this.flushEventCounts();
     }
+    this.processEvent(name, properties);
+  }
+
+  /** Runs one event through the engine, reporting to the live debugger on test
+   *  devices. `occurredAt` (ms epoch) is set for a replayed server event. */
+  private processEvent(name: string, properties: Record<string, unknown>, occurredAt?: number): void {
+    const eventT = occurredAt === undefined ? undefined : occurredAt / 1000;
     if (!this.isDebugDevice()) {
-      this.engine.process(name, properties);
+      this.engine.process(name, properties, eventT);
       return;
     }
     this.collecting = [];
     try {
-      this.engine.process(name, properties);
+      this.engine.process(name, properties, eventT);
     } finally {
       const decisions = this.collecting;
       this.collecting = null;
-      this.sendDebug(name, debugProperties(properties), decisions);
+      this.sendDebug(name, debugProperties(properties), decisions, occurredAt);
     }
+  }
+
+  // ── Server events mailbox ────────────────────────────────────────────────────
+
+  /** Checks now, then 30 s and 90 s later, every 5 minutes, and every 60 s while
+   *  a sequence waits on a server event. Restarts the schedule; no-op unless the
+   *  config has `pendingEvents`. */
+  private startPendingChecks(): void {
+    this.stopPendingChecks();
+    if (!this.configStore.pendingEvents) return;
+    void this.checkPending();
+    for (const ms of PENDING_FOLLOW_UPS_MS) {
+      this.pendingTimers.push(setTimeout(() => void this.checkPending(), ms));
+    }
+    this.pendingIntervals.push(
+      setInterval(() => void this.checkPending(), PENDING_INTERVAL_MS),
+      setInterval(() => {
+        if (this.isWaitingOnServerEvent()) void this.checkPending();
+      }, PENDING_WAITING_INTERVAL_MS),
+    );
+  }
+
+  private stopPendingChecks(): void {
+    for (const t of this.pendingTimers) clearTimeout(t);
+    for (const t of this.pendingIntervals) clearInterval(t);
+    this.pendingTimers = [];
+    this.pendingIntervals = [];
+  }
+
+  /** Fetches and replays this user's waiting server events. One request at a
+   *  time; a full page is followed by one more call. Failures are silent: the
+   *  next scheduled check retries. */
+  private async checkPending(): Promise<void> {
+    if (this.pendingInFlight || !this.configStore.pendingEvents) return;
+    const identity = this.identityStore.snapshot();
+    const userId = identity.amplitudeUserId ?? identity.hostUserId ?? null;
+    const deviceId = identity.amplitudeDeviceId ?? null;
+    if (!userId && !deviceId) return;
+    this.pendingInFlight = true;
+    try {
+      for (let call = 0; call < 2; call++) {
+        const events = await this.api.fetchPending({ userId, deviceId });
+        this.replayPending(events);
+        if (events.length < PENDING_PAGE_SIZE) break;
+      }
+    } catch {
+      // Offline or server trouble: the next scheduled check retries.
+    } finally {
+      this.pendingInFlight = false;
+    }
+  }
+
+  /** Replays server events like `track`, oldest first, at the time each one
+   *  happened. Not counted in event signals: the app didn't send them. */
+  private replayPending(events: PendingEvent[]): void {
+    const timed = events.map((e) => ({ e, at: Date.parse(e.occurredAt) }));
+    timed.sort((a, b) => a.at - b.at);
+    for (const { e, at } of timed) this.processEvent(e.name, e.properties, at);
+  }
+
+  /** True while a SEQUENCE trigger for the current user has started and its next
+   *  step's event arrives by server stream, up to 3 hours after it started. */
+  private isWaitingOnServerEvent(): boolean {
+    const serverEvents = this.configStore.serverEvents;
+    if (serverEvents.length === 0) return false;
+    const state = this.triggerStateStore.load(endUserIdOf(this.identityStore.snapshot()));
+    const nowT = Date.now() / 1000;
+    for (const survey of this.configStore.surveys) {
+      for (const trigger of survey.triggers ?? []) {
+        if (trigger.type !== "SEQUENCE") continue;
+        const record = state.triggers[trigger.id];
+        if (!record || record.stepIndex <= 0 || record.startedAt === null) continue;
+        if (nowT - record.startedAt > PENDING_WAITING_MAX_SECONDS) continue;
+        const steps = [...trigger.steps].sort((a, b) => a.order - b.order);
+        const next = steps[Math.min(record.stepIndex, steps.length - 1)];
+        if (next && serverEvents.includes(next.event)) return true;
+      }
+    }
+    return false;
   }
 
   // ── Live debugger ────────────────────────────────────────────────────────────
@@ -215,10 +328,11 @@ export class MicroSurveysClient {
     else if (this.isDebugDevice()) this.sendDebug(null, {}, [d]);
   }
 
-  private sendDebug(event: string | null, properties: Record<string, unknown>, decisions: Decision[]): void {
+  /** `at` (ms epoch) defaults to now; a replayed server event passes its `occurredAt`. */
+  private sendDebug(event: string | null, properties: Record<string, unknown>, decisions: Decision[], at?: number): void {
     const endUserId = endUserIdOf(this.identityStore.snapshot());
     this.api.recordDebug(
-      { at: new Date().toISOString(), event, properties, decisions },
+      { at: new Date(at ?? Date.now()).toISOString(), event, properties, decisions },
       endUserId,
       { ...this.deviceContext(), sdkVersion: SDK_VERSION },
     );

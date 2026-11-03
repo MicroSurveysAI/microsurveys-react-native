@@ -70,6 +70,14 @@ export class ConfigStore {
     return this.parsed?.debugUsers ?? [];
   }
 
+  get pendingEvents(): boolean {
+    return this.parsed?.pendingEvents ?? false;
+  }
+
+  get serverEvents(): string[] {
+    return this.parsed?.serverEvents ?? [];
+  }
+
   get etag(): string | null {
     return this.persisted?.etag ?? null;
   }

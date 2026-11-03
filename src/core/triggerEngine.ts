@@ -80,12 +80,15 @@ export class TriggerEngine {
     this.onDecision = opts.onDecision ?? (() => {});
   }
 
-  /** Feed an event into the engine. */
-  process(name: string, properties: Record<string, unknown> = {}): void {
+  /** Feed an event into the engine. `eventT` (unix seconds) is when it happened,
+   *  for a replayed server event; it drives sequence progress and
+   *  `sequenceWindowSeconds`. The survey window, caps and delay always use now. */
+  process(name: string, properties: Record<string, unknown> = {}, eventT?: number): void {
     const identity = this.identityProvider();
     const endUserId = endUserIdOf(identity);
     const state = this.store.load(endUserId);
     const nowT = this.now();
+    const atT = eventT ?? nowT;
 
     for (const survey of this.surveysProvider()) {
       const triggers = survey.triggers;
@@ -101,7 +104,7 @@ export class TriggerEngine {
       }
 
       for (const trigger of triggers) {
-        const satisfied = this.advanceTrigger(trigger, state, name, properties, nowT);
+        const satisfied = this.advanceTrigger(trigger, state, name, properties, atT);
         const skip = (reason: DecisionReason) => this.onDecision({ surveyId: survey.id, triggerId: trigger.id, reason });
         if (!satisfied) {
           if (names(trigger)) {
