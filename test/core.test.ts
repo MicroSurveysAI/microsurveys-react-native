@@ -283,3 +283,22 @@ describe("config bounds", () => {
     expect((choice!.config as { options: unknown[] }).options).toHaveLength(100);
   });
 });
+
+describe("a survey this SDK version can't show", () => {
+  it("is skipped, not the whole config", () => {
+    // A question type with no renderer here would throw while rendering, and an
+    // unknown trigger type would fire as if it were SINGLE: drop just that survey.
+    const cfg = parseConfig(
+      JSON.stringify({
+        projectId: "p",
+        surveys: [
+          { id: "new", name: "New", questions: [{ id: "q", type: "MATRIX", prompt: "?" }] },
+          { id: "seq", name: "Seq", questions: [], triggers: [{ id: "t", type: "FUNNEL", steps: [] }] },
+          { id: "ok", name: "Ok", questions: [{ id: "q", type: "THUMBS", prompt: "?" }], triggers: [{ id: "t2", steps: [] }] },
+        ],
+      }),
+    );
+    expect(cfg!.surveys.map((s) => s.id)).toEqual(["ok"]);
+    expect(cfg!.surveys[0]!.triggers![0]!.type).toBe("SINGLE"); // a trigger without a type is SINGLE
+  });
+});

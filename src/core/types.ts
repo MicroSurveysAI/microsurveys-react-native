@@ -250,6 +250,8 @@ const MAX_SCALE_ABS = 1000;
 const MAX_STARS = 100;
 const MAX_OPTIONS = 100;
 
+const QUESTION_TYPES: readonly QuestionType[] = ["NPS", "CES", "CSAT_STAR", "CSAT_EMOJI", "THUMBS", "SINGLE_CHOICE", "OPEN_TEXT"];
+
 function boundedScale(min: number, max: number): { min: number; max: number } {
   const lo = Math.min(Math.max(min, -MAX_SCALE_ABS), MAX_SCALE_ABS);
   let hi = Math.min(Math.max(max, -MAX_SCALE_ABS), MAX_SCALE_ABS);
@@ -335,10 +337,18 @@ function normalizeSurvey(raw: Record<string, unknown>): Survey | null {
   const id = strOrUndef(raw.id);
   const name = strOrUndef(raw.name);
   if (!id || name === undefined) return null;
-  const questions = (Array.isArray(raw.questions) ? raw.questions : [])
+  const rawQuestions = Array.isArray(raw.questions) ? raw.questions : [];
+  const rawTriggers = Array.isArray(raw.triggers) ? raw.triggers : [];
+  // Skip a survey this SDK version can't show (a newer question or trigger type):
+  // there's no renderer for the question, and the trigger would fire by the wrong rule.
+  if (
+    rawQuestions.some((q) => !QUESTION_TYPES.includes(asObject(q).type as QuestionType)) ||
+    rawTriggers.some((t) => { const type = asObject(t).type; return type != null && type !== "SINGLE" && type !== "SEQUENCE"; })
+  ) return null;
+  const questions = rawQuestions
     .map((q) => normalizeQuestion(asObject(q)))
     .filter((q): q is Question => q !== null);
-  const triggers = (Array.isArray(raw.triggers) ? raw.triggers : [])
+  const triggers = rawTriggers
     .map((t) => normalizeTrigger(asObject(t)))
     .filter((t): t is Trigger => t !== null);
   return {
