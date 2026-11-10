@@ -1,6 +1,6 @@
 {
   "name": "@microsurveysai/react-native",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "React Native SDK for MicroSurveys — native in-app surveys, triggered on-device by the events you already track.",
   "license": "MIT",
   "type": "module",
@@ -26,16 +26,19 @@
     "type": "git",
     "url": "git+https://github.com/MicroSurveysAI/microsurveys-react-native.git"
   },
-  "homepage": "https://github.com/MicroSurveysAI/microsurveys-react-native",
+  "homepage": "https://docs.microsurveys.ai/react-native-sdk/",
   "bugs": "https://github.com/MicroSurveysAI/microsurveys-react-native/issues",
   "keywords": [
     "microsurveys",
+    "microsurvey",
     "surveys",
+    "in-app-survey",
     "react-native",
     "expo",
-    "in-app",
     "nps",
     "csat",
+    "ces",
+    "user-feedback",
     "feedback"
   ],
   "scripts": {
