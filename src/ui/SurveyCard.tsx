@@ -10,8 +10,9 @@
 
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Animated, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { AccessibilityInfo, Animated, Platform, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import type { LayoutChangeEvent } from "react-native";
+import { thanksDurationMs, thanksMessage } from "../core";
 import type { AnswerValue, Survey, SurveyAnswer, SurveyResult } from "../core";
 import { CloseButton } from "./CloseButton";
 import { QuestionInput, font, isAnswerValid } from "./questions";
@@ -19,9 +20,6 @@ import type { SurveyTheme } from "./theme";
 
 /** Bottom padding inside the scroll area, taken back from the button's margin. */
 const CLIP_ROOM = 4;
-
-/** How long the "Thanks" confirmation shows before the card closes. */
-const THANKS_MS = 1300;
 
 export interface SurveyCardHandle {
   /** Dismiss as the user closing the survey (scrim tap, swipe, back button). */
@@ -58,10 +56,32 @@ export const SurveyCard = forwardRef<SurveyCardHandle, SurveyCardProps>(function
   const [height, setHeight] = useState(0);
   const reported = useRef(false);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const closed = useRef(false);
+  const unmounted = useRef(false);
 
   useEffect(() => () => {
+    unmounted.current = true;
     if (closeTimer.current) clearTimeout(closeTimer.current);
   }, []);
+
+  /** Close the "Thanks" state once: on its timer or when the user taps it. */
+  function closeThanks() {
+    if (closed.current) return;
+    closed.current = true;
+    if (closeTimer.current) clearTimeout(closeTimer.current);
+    closeTimer.current = null;
+    onClose();
+  }
+
+  /** Start the "Thanks" timer: sized to the message, doubled for screen readers. */
+  function startThanksTimer() {
+    const ms = thanksDurationMs(survey.successMessage, survey.successPace);
+    const schedule = (screenReader: boolean) => {
+      if (closed.current || unmounted.current || closeTimer.current) return;
+      closeTimer.current = setTimeout(closeThanks, screenReader ? ms * 2 : ms);
+    };
+    AccessibilityInfo.isScreenReaderEnabled().then(schedule, () => schedule(false));
+  }
 
   const question = questions[index];
   const isLast = index >= questions.length - 1;
@@ -100,7 +120,7 @@ export const SurveyCard = forwardRef<SurveyCardHandle, SurveyCardProps>(function
     }
     if (report(true)) {
       setDone(true);
-      closeTimer.current = setTimeout(onClose, THANKS_MS);
+      startThanksTimer();
     }
   }
 
@@ -112,10 +132,15 @@ export const SurveyCard = forwardRef<SurveyCardHandle, SurveyCardProps>(function
   if (!question) return null;
 
   if (done) {
-    const custom = survey.successMessage?.trim();
     return (
       // Keep the card's height so the sheet doesn't jump when the content swaps.
-      <View style={[styles.thanks, { minHeight: height, padding: pad }]} accessibilityLiveRegion="polite">
+      // Tapping the thanks closes it at once.
+      <Pressable
+        onPress={closeThanks}
+        accessibilityLiveRegion="polite"
+        accessibilityHint="Closes the survey"
+        style={[styles.thanks, { minHeight: height, padding: pad }]}
+      >
         <FadeIn>
           <View style={styles.thanksStack}>
             <View style={[styles.check, { backgroundColor: theme.accent }]}>
@@ -123,10 +148,10 @@ export const SurveyCard = forwardRef<SurveyCardHandle, SurveyCardProps>(function
                 ✓
               </Text>
             </View>
-            <Text style={[promptStyle(theme), { color: theme.text, textAlign: "center", marginTop: theme.spacing }]}>{custom || "Thanks!"}</Text>
+            <Text style={[promptStyle(theme), { color: theme.text, textAlign: "center", marginTop: theme.spacing }]}>{thanksMessage(survey.successMessage)}</Text>
           </View>
         </FadeIn>
-      </View>
+      </Pressable>
     );
   }
 
@@ -221,7 +246,8 @@ const styles = StyleSheet.create({
   scroll: { flexGrow: 0, flexShrink: 1 },
   button: { alignItems: "center", justifyContent: "center" },
   thanks: { alignItems: "center", justifyContent: "center" },
-  thanksStack: { alignItems: "center" },
+  // Stretch so a long message wraps inside the card instead of overflowing it.
+  thanksStack: { alignItems: "center", alignSelf: "stretch" },
   check: { width: 48, height: 48, borderRadius: 24, alignItems: "center", justifyContent: "center" },
   checkGlyph: { fontSize: 26, fontWeight: "700", lineHeight: 30 },
 });

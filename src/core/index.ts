@@ -21,6 +21,7 @@ export type { AnalyticsIdentity } from "./identity";
 export { memoryStorage, STORAGE_KEY_PREFIX } from "./storage";
 export type { KeyValueStorage } from "./storage";
 export { parseConfig, endUserIdOf } from "./types";
+export { thanksDurationMs, thanksMessage, DEFAULT_SUCCESS_MESSAGE } from "./thanks";
 export type {
   Json,
   JsonObject,
@@ -31,6 +32,7 @@ export type {
   Question,
   Trigger,
   Survey,
+  SuccessPace,
   SDKConfig,
   ProjectTheme,
   DeviceContext,

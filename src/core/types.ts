@@ -75,6 +75,9 @@ export interface Trigger {
 
 // ── Survey + config envelope ─────────────────────────────────────────────────
 
+/** Thank-you pace; anything else (or null) is normal. */
+export type SuccessPace = "slow" | "fast";
+
 export interface Survey {
   id: string;
   name: string;
@@ -90,6 +93,8 @@ export interface Survey {
   /** `"sheet"` | `"dialog"` | null (inherit the project theme's position). */
   presentation?: string | null;
   successMessage?: string | null;
+  /** How long the thank-you stays up: "slow" | "fast" | null (normal). */
+  successPace?: SuccessPace | null;
   /** Platform targeting for auto-presentation. Empty/absent = all platforms.
    *  The engine skips a survey whose list is non-empty and excludes the client's
    *  platform. Explicit inline `<MicroSurvey>` embeds ignore this. */
@@ -364,6 +369,7 @@ function normalizeSurvey(raw: Record<string, unknown>): Survey | null {
     dismissible: typeof raw.dismissible === "boolean" ? raw.dismissible : null,
     presentation: strOrUndef(raw.presentation) ?? null,
     successMessage: strOrUndef(raw.successMessage) ?? null,
+    successPace: raw.successPace === "slow" || raw.successPace === "fast" ? raw.successPace : null,
     platforms: Array.isArray(raw.platforms) ? raw.platforms.filter((p): p is string => typeof p === "string") : null,
   };
 }

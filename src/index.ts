@@ -31,6 +31,7 @@ export type { AmplitudeEvent, MicroSurveysAmplitudePlugin } from "./amplitude";
 export { parseConfig } from "./core";
 export type {
   Survey,
+  SuccessPace,
   Question,
   SurveyResult,
   SurveyAnswer,
