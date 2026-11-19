@@ -2,7 +2,8 @@
 // outbox.ts
 //
 // FIFO, persisted queue of pending POSTs (impressions/responses), so
-// ingest survives offline reloads and flushes on the next start. Each entry
+// ingest survives offline restarts. The API client retries it with a backoff,
+// on every return to the foreground, and on the next start. Each entry
 // carries a UUID so it can be removed after a successful send. Port of the
 // `Outbox` in iOS `APIClient.swift`.
 //

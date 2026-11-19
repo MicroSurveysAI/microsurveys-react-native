@@ -59,7 +59,7 @@ import { MicroSurvey } from "@microsurveysai/react-native";
 | --- | --- | --- |
 | `apiKey` | — | Your project API key. |
 | `apiBaseURL` | `https://console.microsurveys.ai` | For self-hosted deployments. |
-| `refreshOnForeground` | `true` | On app foreground, retry queued ingest and refresh a stale config. |
+| `refreshOnForeground` | `true` | On app foreground, refresh a stale config. (Queued impressions and responses are retried on every foreground, and every few seconds while offline, either way.) |
 | `configTTLms` | 12h | How long the cached config counts as fresh. |
 | `storage` | AsyncStorage | A synchronous store (e.g. MMKV) to persist into instead. |
 | `appVersion` | — | Your app's version (e.g. `"3.2.0"`), sent with responses so results can be compared across releases. With Expo, pass `Application.nativeApplicationVersion` from `expo-application`. |

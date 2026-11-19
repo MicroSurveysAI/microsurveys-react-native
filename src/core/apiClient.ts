@@ -5,6 +5,9 @@
 // impression/response carries a UUID `clientId` so the server upserts and
 // retries never duplicate (API-CONTRACT §Idempotency). Port of iOS `APIClient`.
 //
+// A flush that stops on a retryable failure (offline, 429, 5xx) schedules its
+// own retry: 2 s, doubling per failure in a row, capped at 30 s.
+//
 
 import { Outbox } from "./outbox";
 import { uuid } from "./storage";
@@ -32,11 +35,40 @@ export interface PendingEvent {
 /** The most events `/api/sdk/pending` returns per call. */
 export const PENDING_PAGE_SIZE = 50;
 
+/** First retry after a failed flush; doubles per failure in a row. */
+export const RETRY_BASE_MS = 2_000;
+/** Longest wait between retries. */
+export const RETRY_MAX_MS = 30_000;
+/** An ingest POST that hasn't answered by then is aborted and retried later. */
+export const INGEST_TIMEOUT_MS = 15_000;
+
+/** One impression as sent to `/api/sdk/impressions`. */
+export interface ImpressionInput {
+  /** Idempotency key; the response from the same showing points back to it.
+   *  Generated when omitted. */
+  clientId?: string;
+  surveyId: string;
+  triggerId: string | null;
+  endUserId: string;
+  shownAt: Date;
+  dismissed: boolean;
+  context: DeviceContext;
+}
+
 export class ApiClient {
   private readonly apiKey: string;
   private readonly baseURL: string;
   private readonly outbox: Outbox;
   private isFlushing = false;
+  /** The flush in progress, returned to callers that ask for another meanwhile. */
+  private flushPromise: Promise<void> = Promise.resolve();
+  /** Set when flush() is called during a flush: run another pass before finishing. */
+  private flushAgain = false;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Failed flushes in a row, for the retry backoff. */
+  private failures = 0;
+  /** After `cancelRetry()`: no new retry timers until the next `resumeRetry()`. */
+  private retryStopped = false;
 
   constructor(apiKey: string, baseURL: string, storage: KeyValueStorage) {
     this.apiKey = apiKey;
@@ -104,16 +136,11 @@ export class ApiClient {
   // ── Impressions / responses ─────────────────────────────────────────────────
 
   /** Queues the impression and returns its `clientId`, so the response from the
-   *  same showing can point back to it. */
-  recordImpression(input: {
-    surveyId: string;
-    triggerId: string | null;
-    endUserId: string;
-    shownAt: Date;
-    dismissed: boolean;
-    context: DeviceContext;
-  }): string {
-    const clientId = uuid();
+   *  same showing can point back to it. Pass the `clientId` to send the same
+   *  impression again (e.g. with `dismissed: true` once the user dismissed it):
+   *  the server updates the one it has. */
+  recordImpression(input: ImpressionInput): string {
+    const clientId = input.clientId ?? uuid();
     const payload = {
       clientId,
       surveyId: input.surveyId,
@@ -177,50 +204,109 @@ export class ApiClient {
   // ── Flush ────────────────────────────────────────────────────────────────────
 
   /** POSTs queued entries in order. Stops at the first retryable failure (likely
-   *  offline) and leaves the rest for next time. Entries queued while a flush is
-   *  running are sent by the same flush, so nothing waits for the next event.
-   *  Idempotency keys make re-sends safe. Never throws. */
-  async flush(): Promise<void> {
-    if (this.isFlushing) return;
+   *  offline) and schedules a retry (2 s, doubling, capped at 30 s). Entries
+   *  queued while a flush is running are sent by the same flush, so nothing waits
+   *  for the next event. Idempotency keys make re-sends safe. Resolves when the
+   *  flush in progress is done; never throws. */
+  flush(): Promise<void> {
+    if (this.isFlushing) {
+      // The running flush makes one more pass, so an entry queued after its last
+      // look at the outbox isn't left behind.
+      this.flushAgain = true;
+      return this.flushPromise;
+    }
     this.isFlushing = true;
+    this.clearRetryTimer();
+    this.flushPromise = this.runFlush();
+    return this.flushPromise;
+  }
+
+  /** Stops retrying (the client is stopping). Queued entries stay for later. */
+  cancelRetry(): void {
+    this.retryStopped = true;
+    this.clearRetryTimer();
+  }
+
+  /** Allows retries again after `cancelRetry()`. */
+  resumeRetry(): void {
+    this.retryStopped = false;
+  }
+
+  private async runFlush(): Promise<void> {
+    let failed = false;
+    // Guards against re-sending an entry whose removal didn't persist (storage full).
+    const sent = new Set<string>();
     try {
-      // Guards against re-sending an entry whose removal didn't persist (storage full).
-      const sent = new Set<string>();
-      for (;;) {
-        const pending = this.outbox.snapshot().filter((e) => !sent.has(e.id));
-        if (pending.length === 0) break;
-        let failed = false;
-        for (const entry of pending) {
-          try {
-            await this.post(entry.path, entry.body);
-            this.outbox.remove(entry.id);
-            sent.add(entry.id);
-          } catch {
-            failed = true; // network/server problem — retry on the next flush
-            break;
+      do {
+        this.flushAgain = false;
+        for (;;) {
+          const pending = this.outbox.snapshot().filter((e) => !sent.has(e.id));
+          if (pending.length === 0) break;
+          for (const entry of pending) {
+            try {
+              await this.post(entry.path, entry.body);
+              this.outbox.remove(entry.id);
+              sent.add(entry.id);
+            } catch {
+              failed = true; // network/server problem: retry after a backoff
+              break;
+            }
           }
+          if (failed) break;
         }
-        if (failed) break;
-      }
+      } while (!failed && this.flushAgain);
     } finally {
+      // Synchronously after the last look at the outbox: a flush() from here on
+      // starts a new pass instead of joining this one.
+      this.flushAgain = false;
       this.isFlushing = false;
+    }
+
+    if (failed) {
+      this.failures += 1;
+      this.scheduleRetry();
+    } else {
+      this.failures = 0;
     }
   }
 
+  /** One pending retry at most. */
+  private scheduleRetry(): void {
+    if (this.retryStopped || this.retryTimer) return;
+    const delay = Math.min(RETRY_BASE_MS * 2 ** Math.max(0, this.failures - 1), RETRY_MAX_MS);
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      void this.flush();
+    }, delay);
+  }
+
+  private clearRetryTimer(): void {
+    if (this.retryTimer) clearTimeout(this.retryTimer);
+    this.retryTimer = null;
+  }
+
   private async post(path: string, body: string): Promise<void> {
-    const res = await fetch(this.endpoint(path), {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        "MS-Api-Version": API_VERSION,
-        "Content-Type": "application/json; charset=utf-8",
-      },
-      body,
-    });
-    // 429/5xx → throw to retry later. Other 4xx are permanent for this body;
-    // treat as done so we don't wedge the queue (matches iOS retry rules).
-    if (res.status === 429 || (res.status >= 500 && res.status < 600)) {
-      throw new Error(`retryable ${res.status}`);
+    // A stalled request would hold up the queue; give up on it and retry later.
+    const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+    const timeout = controller ? setTimeout(() => controller.abort(), INGEST_TIMEOUT_MS) : null;
+    try {
+      const res = await fetch(this.endpoint(path), {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          "MS-Api-Version": API_VERSION,
+          "Content-Type": "application/json; charset=utf-8",
+        },
+        body,
+        signal: controller?.signal,
+      });
+      // 429/5xx → throw to retry later. Other 4xx are permanent for this body;
+      // treat as done so we don't wedge the queue (matches iOS retry rules).
+      if (res.status === 429 || (res.status >= 500 && res.status < 600)) {
+        throw new Error(`retryable ${res.status}`);
+      }
+    } finally {
+      if (timeout) clearTimeout(timeout);
     }
   }
 

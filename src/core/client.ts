@@ -9,6 +9,8 @@
 //
 
 import { ApiClient, PENDING_PAGE_SIZE } from "./apiClient";
+import type { ImpressionInput } from "./apiClient";
+import { uuid } from "./storage";
 import type { PendingEvent } from "./apiClient";
 import { ConfigStore, TriggerStateStore } from "./persistence";
 import { IdentityStore } from "./identity";
@@ -65,12 +67,20 @@ export interface CreateClientOptions {
   subscribeBackground?: (onBackground: () => void) => () => void;
 }
 
-/** An auto-triggered survey the host should present. Call `close` exactly once
- *  when the UI dismisses (completed, partial, or dismissed). */
+/** A survey the host should present. Call `shown` once it is on screen (this
+ *  sends the impression), then `close` once when the UI goes away (completed,
+ *  partial, or dismissed). Both are safe to call more than once. */
 export interface ActiveSurvey {
   survey: Survey;
+  /** The trigger that fired; null for an inline survey. */
   trigger: Trigger | null;
-  close(result: SurveyResult): void;
+  /** The survey is on screen: queues its impression (`dismissed: false`). */
+  shown(): void;
+  /** The survey went away. A dismissal re-sends the impression with
+   *  `dismissed: true`; answers are sent as a response. Without a result (the
+   *  survey never got to show), nothing more is sent. If `shown` was never
+   *  called, the impression is sent now, with the final `dismissed`. */
+  close(result?: SurveyResult | null): void;
 }
 
 type PresentListener = (active: ActiveSurvey) => void;
@@ -80,7 +90,13 @@ interface Presentation {
   survey: Survey;
   trigger: Trigger | null;
   identity: Identity;
-  shownAt: Date;
+  /** The impression's clientId, made when the survey is handed to the host. */
+  impressionId: string;
+  /** When the survey was handed to the host; the impression's time if the host
+   *  never reports it shown. */
+  presentedAt: Date;
+  /** The impression as queued when the survey appeared; re-sent on dismissal. */
+  impression: ImpressionInput | null;
   closed: boolean;
 }
 
@@ -143,6 +159,7 @@ export class MicroSurveysClient {
   start(): void {
     if (this.started) return;
     this.started = true;
+    this.api.resumeRetry();
     void this.api.flush();
     // Check the server events mailbox once the config says whether there is one.
     void this.refreshConfig().then(() => {
@@ -151,11 +168,9 @@ export class MicroSurveysClient {
     // Always subscribed: the mailbox is checked on every foreground, whatever the
     // config TTL, and even when `refreshOnForeground` is off.
     this.unsubscribeForeground = this.subscribeForeground(() => {
-      if (this.refreshOnForeground) {
-        // Retry ingest queued while offline/backgrounded, then refresh if stale.
-        void this.api.flush();
-        this.refreshConfigIfStale();
-      }
+      // Send ingest queued while offline or in the background.
+      void this.api.flush();
+      if (this.refreshOnForeground) this.refreshConfigIfStale();
       this.startPendingChecks();
     });
     // The app may be suspended or killed in the background: send what was counted first.
@@ -178,6 +193,8 @@ export class MicroSurveysClient {
     this.unsubscribeBackground = null;
     this.unsubscribeForeground?.();
     this.unsubscribeForeground = null;
+    // Queued entries stay in the outbox for the next start.
+    this.api.cancelRetry();
     this.started = false;
   }
 
@@ -384,61 +401,92 @@ export class MicroSurveysClient {
       return;
     }
     this.handleDecision({ surveyId: survey.id, triggerId: trigger.id, reason: "shown" });
-    const p: Presentation = { survey, trigger, identity, shownAt: new Date(), closed: false };
+    const p = this.newPresentation(survey, trigger, identity);
     this.active = p;
     const active = this.toActiveSurvey(p);
     this.presentListeners.forEach((l) => l(active));
+  }
+
+  private newPresentation(survey: Survey, trigger: Trigger | null, identity: Identity): Presentation {
+    return { survey, trigger, identity, impressionId: uuid(), presentedAt: new Date(), impression: null, closed: false };
   }
 
   private toActiveSurvey(p: Presentation): ActiveSurvey {
     return {
       survey: p.survey,
       trigger: p.trigger,
-      close: (result: SurveyResult) => {
+      shown: () => this.markShown(p),
+      close: (result?: SurveyResult | null) => {
         if (p.closed) return;
         p.closed = true;
-        this.recordOutcome(p.survey.id, p.trigger?.id ?? null, p.identity, p.shownAt, result);
         if (this.active === p) this.active = null;
+        if (result) this.recordOutcome(p, result);
       },
     };
   }
 
-  /** Records the outcome of an **inline** `<MicroSurvey>` (no trigger/gate). */
-  recordInline(survey: Survey, result: SurveyResult, shownAt: Date): void {
-    const identity = this.identityStore.snapshot();
-    this.recordOutcome(survey.id, null, identity, shownAt, result);
+  /** Queues the impression the moment the survey is on screen, so it counts even
+   *  if the app is killed before the survey closes. */
+  private markShown(p: Presentation): void {
+    if (p.impression || p.closed) return;
+    p.impression = {
+      clientId: p.impressionId,
+      surveyId: p.survey.id,
+      triggerId: p.trigger?.id ?? null,
+      endUserId: endUserIdOf(p.identity),
+      shownAt: new Date(),
+      dismissed: false,
+      context: this.deviceContext(),
+    };
+    this.api.recordImpression(p.impression);
   }
 
-  private recordOutcome(
-    surveyId: string,
-    triggerId: string | null,
-    identity: Identity,
-    shownAt: Date,
-    result: SurveyResult,
-  ): void {
-    const endUserId = endUserIdOf(identity);
-    const context = this.deviceContext();
-    // Impression is finalized at close, so `dismissed` is authoritative.
-    const impressionId = this.api.recordImpression({
-      surveyId,
-      triggerId,
-      endUserId,
-      shownAt,
-      dismissed: result.dismissed,
-      context,
-    });
+  /** An **inline** `<MicroSurvey>` (no trigger, no gate, not "the" active survey).
+   *  Call `shown` when it renders and `close` with its outcome. */
+  presentInline(survey: Survey): ActiveSurvey {
+    return this.toActiveSurvey(this.newPresentation(survey, null, this.identityStore.snapshot()));
+  }
+
+  /** Records the outcome of an inline survey in one go, at close. Prefer
+   *  `presentInline`, which sends the impression when the survey appears. */
+  recordInline(survey: Survey, result: SurveyResult, shownAt: Date): void {
+    const p = this.newPresentation(survey, null, this.identityStore.snapshot());
+    p.presentedAt = shownAt;
+    p.closed = true;
+    this.recordOutcome(p, result);
+  }
+
+  private recordOutcome(p: Presentation, result: SurveyResult): void {
+    let impression = p.impression;
+    if (!impression) {
+      // Never reported shown: send the impression now, with the final `dismissed`.
+      impression = {
+        clientId: p.impressionId,
+        surveyId: p.survey.id,
+        triggerId: p.trigger?.id ?? null,
+        endUserId: endUserIdOf(p.identity),
+        shownAt: p.presentedAt,
+        dismissed: result.dismissed,
+        context: this.deviceContext(),
+      };
+      this.api.recordImpression(impression);
+    } else if (result.dismissed) {
+      // Already sent as shown: the same impression again, now dismissed. The
+      // server updates the one it has (same clientId).
+      this.api.recordImpression({ ...impression, dismissed: true });
+    }
     // A pure dismissal (no answers) is an impression, NOT a response — don't
     // inflate the response count. Partial multi-step answers still count.
     if (result.completed || result.answers.length > 0) {
       this.api.recordResponse({
-        surveyId,
-        endUserId,
+        surveyId: p.survey.id,
+        endUserId: impression.endUserId,
         completed: result.completed,
         submittedAt: new Date(),
-        userProps: identity.userProperties,
-        impressionId,
-        triggerId,
-        context,
+        userProps: p.identity.userProperties,
+        impressionId: p.impressionId,
+        triggerId: p.trigger?.id ?? null,
+        context: impression.context,
         answers: result.answers,
       });
     }

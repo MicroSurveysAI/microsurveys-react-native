@@ -79,7 +79,14 @@ function OverlayHost({ instance, fontFamily }: { instance: MicroSurveys; fontFam
     [instance],
   );
 
+  // On screen: send the impression now rather than when the survey closes.
+  useEffect(() => {
+    current?.active.shown();
+  }, [current]);
+
   function showNext() {
+    // Normally closed already by onResult; this only frees the slot if not.
+    current?.active.close();
     const next = queue.current.shift();
     if (next) {
       setCurrent({ active: next, id: nextId.current++ });

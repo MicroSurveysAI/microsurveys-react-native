@@ -42,8 +42,9 @@ export interface MicroSurveysOptions {
   apiKey: string;
   /** Override for self-hosted deployments. Defaults to https://console.microsurveys.ai. */
   apiBaseURL?: string;
-  /** Refresh config (when stale) and retry queued ingest whenever the app returns
-   *  to the foreground. Default true. */
+  /** Refresh config (when stale) whenever the app returns to the foreground.
+   *  Default true. (Queued impressions/responses are retried on every foreground
+   *  either way.) */
   refreshOnForeground?: boolean;
   /** Foreground freshness window for the cached config, in ms. Default 12h. */
   configTTLms?: number;
@@ -197,7 +198,25 @@ export class MicroSurveys {
     };
   }
 
-  /** Records the outcome of an inline `<MicroSurvey>`. */
+  /** Starts one showing of an inline `<MicroSurvey>`: call `shown` once it
+   *  renders (sends the impression) and `close` with its outcome. */
+  presentInline(survey: Survey): ActiveSurvey {
+    let inner: ActiveSurvey | null = null;
+    const withShowing = (fn: (s: ActiveSurvey) => void) =>
+      this.withClient((c) => {
+        inner ??= c.presentInline(survey);
+        fn(inner);
+      });
+    return {
+      survey,
+      trigger: null,
+      shown: () => withShowing((s) => s.shown()),
+      close: (result) => withShowing((s) => s.close(result)),
+    };
+  }
+
+  /** Records the outcome of an inline survey in one go, at close. Prefer
+   *  `presentInline`, which sends the impression when the survey appears. */
   recordInline(survey: Survey, result: SurveyResult, shownAt: Date): void {
     this.withClient((c) => c.recordInline(survey, result, shownAt));
   }

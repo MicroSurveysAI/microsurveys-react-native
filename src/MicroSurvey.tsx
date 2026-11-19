@@ -3,14 +3,15 @@
 //
 // `<MicroSurvey surveyId>` — renders a specific survey **inline** in a screen
 // (no overlay), e.g. in a settings or feedback screen. Pulls the survey from
-// the cached config and records an impression + response when it closes. It
+// the cached config, sends an impression when it renders and a response when it
+// closes. It
 // ignores triggers and platform targeting: rendering it is an explicit choice.
 //
 
 import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { View, useColorScheme } from "react-native";
 import type { StyleProp, ViewStyle } from "react-native";
-import type { Survey, SurveyResult } from "./core";
+import type { ActiveSurvey, Survey, SurveyResult } from "./core";
 import { MicroSurveysContext } from "./provider";
 import { SurveyCard } from "./ui/SurveyCard";
 import { resolveTheme } from "./ui/theme";
@@ -28,7 +29,8 @@ export function MicroSurvey({ surveyId, onComplete, style }: MicroSurveyProps) {
   const scheme = useColorScheme() === "dark" ? "dark" : "light";
   const [survey, setSurvey] = useState<Survey | null>(null);
   const [closed, setClosed] = useState(false);
-  const shownAt = useRef<Date | null>(null);
+  // One showing per mounted survey: its impression is sent once, when it renders.
+  const showing = useRef<ActiveSurvey | null>(null);
   const result = useRef<SurveyResult | null>(null);
 
   useEffect(() => {
@@ -40,8 +42,16 @@ export function MicroSurvey({ surveyId, onComplete, style }: MicroSurveyProps) {
   const projectTheme = instance?.getTheme();
   const theme = useMemo(() => resolveTheme(projectTheme, { scheme, fontFamily }), [projectTheme, scheme, fontFamily]);
 
+  const visible = !!instance && !!survey && !closed;
+  if (visible && (!showing.current || showing.current.survey.id !== survey.id)) {
+    showing.current = instance.presentInline(survey);
+  }
+
+  useEffect(() => {
+    if (visible) showing.current?.shown();
+  }, [visible, survey]);
+
   if (!instance || !survey || closed) return null;
-  if (!shownAt.current) shownAt.current = new Date();
 
   return (
     <View
@@ -56,7 +66,7 @@ export function MicroSurvey({ surveyId, onComplete, style }: MicroSurveyProps) {
         variant="inline"
         onResult={(r) => {
           result.current = r;
-          instance.recordInline(survey, r, shownAt.current ?? new Date());
+          showing.current?.close(r);
         }}
         onClose={() => {
           setClosed(true);
