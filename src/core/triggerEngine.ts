@@ -135,7 +135,7 @@ export class TriggerEngine {
           continue;
         }
         // (5) sampling (sticky)
-        if (!this.passesSampling(survey, endUserId, state)) {
+        if (!this.passesSampling(survey, endUserId)) {
           skip("sampled_out");
           continue;
         }
@@ -193,14 +193,10 @@ export class TriggerEngine {
     return "open";
   }
 
-  private passesSampling(survey: Survey, endUserId: string, state: UserTriggerState): boolean {
-    const existing = state.surveys[survey.id]?.sampleDecision;
-    if (existing !== undefined && existing !== null) return existing;
-    const decision = inSample(endUserId, survey.id, survey.samplePercent ?? 100);
-    const record = state.surveys[survey.id] ?? {};
-    record.sampleDecision = decision;
-    state.surveys[survey.id] = record;
-    return decision;
+  /** Recomputed on every evaluation, never stored: the bucket is deterministic, so a user stays
+   *  in while the percentage only goes up, and raising it after launch lets new users in. */
+  private passesSampling(survey: Survey, endUserId: string): boolean {
+    return inSample(endUserId, survey.id, survey.samplePercent ?? 100);
   }
 
   // ── Scheduling ─────────────────────────────────────────────────────────────

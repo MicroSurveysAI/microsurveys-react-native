@@ -216,8 +216,6 @@ export interface TriggerRecord {
 export interface SurveyRecord {
   /** Unix seconds the survey was last shown to this user, for `maxPerUserDays`. */
   lastShownAt?: number | null;
-  /** Sticky sampling decision (computed once, reused forever). */
-  sampleDecision?: boolean | null;
 }
 
 export interface UserTriggerState {

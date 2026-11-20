@@ -5,7 +5,7 @@ import { passesFrequency, TriggerEngine } from "../src/core/triggerEngine";
 import { TriggerStateStore } from "../src/core/persistence";
 import { memoryStorage } from "../src/core/storage";
 import { parseConfig, newTriggerRecord } from "../src/core/types";
-import type { Survey, Trigger } from "../src/core/types";
+import type { Survey, SurveyRecord, Trigger } from "../src/core/types";
 
 // Test fixtures mirroring the iOS SDK's Tests/MicroSurveysSDKTests. The sequencer,
 // sampling, and matching rules are the shared cross-platform contract; the FNV
@@ -300,5 +300,59 @@ describe("a survey this SDK version can't show", () => {
     );
     expect(cfg!.surveys.map((s) => s.id)).toEqual(["ok"]);
     expect(cfg!.surveys[0]!.triggers![0]!.type).toBe("SINGLE"); // a trigger without a type is SINGLE
+  });
+});
+
+describe("engine sampling", () => {
+  function sampled(samplePercent: number): Survey {
+    return {
+      id: "svy_1",
+      name: "Test",
+      questions: [],
+      samplePercent,
+      maxPerUserDays: 0,
+      platforms: [],
+      triggers: [{ id: "t", type: "SINGLE", delaySeconds: 0, sequenceWindowSeconds: null, fireEvery: 1, warmupCount: 0, steps: [{ order: 0, event: "ping", match: {} }] }],
+    };
+  }
+
+  function engineFor(store: TriggerStateStore, userId: string, survey: () => Survey, onPresent: () => void) {
+    return new TriggerEngine({
+      store,
+      surveysProvider: () => [survey()],
+      identityProvider: () => ({ anonymousId: userId, userProperties: {} }),
+      onPresent,
+      platform: "android",
+      now: () => 0,
+    });
+  }
+
+  it("lets a sampled-out user in once the sample % is raised", () => {
+    vi.useFakeTimers();
+    const store = new TriggerStateStore(memoryStorage());
+    const bucket = fnv1a32("sample-raise:svy_1") % 100;
+    let percent = bucket; // just below the user's bucket: out
+    let shown = 0;
+    const engine = engineFor(store, "sample-raise", () => sampled(percent), () => shown++);
+    engine.process("ping", {});
+    vi.runAllTimers();
+    expect(shown).toBe(0);
+    percent = bucket + 1; // now in
+    engine.process("ping", {});
+    vi.runAllTimers();
+    vi.useRealTimers();
+    expect(shown).toBe(1);
+  });
+
+  it("ignores a sampling decision saved by an older SDK version", () => {
+    vi.useFakeTimers();
+    const store = new TriggerStateStore(memoryStorage());
+    store.save("sample-saved", { triggers: {}, surveys: { svy_1: { sampleDecision: false } as unknown as SurveyRecord } });
+    let shown = 0;
+    const engine = engineFor(store, "sample-saved", () => sampled(100), () => shown++);
+    engine.process("ping", {});
+    vi.runAllTimers();
+    vi.useRealTimers();
+    expect(shown).toBe(1);
   });
 });
